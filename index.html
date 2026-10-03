@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Детектор звука → Telegram</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #222; }
+    h1 { margin: 0 0 20px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    button { padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 8px; border: 1px solid #ccc; background: #fff; transition: .15s; }
+    button:hover:not(:disabled) { background: #f5f5f5; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #status { margin-top: 20px; font-size: 17px; }
+    #level { height: 22px; background: #eee; margin-top: 20px; border-radius: 6px; overflow: hidden; position: relative; }
+    #level > div { height: 100%; width: 0%; background: linear-gradient(90deg,#4caf50,#8bc34a); transition: width .05s; }
+    #level > span { position: absolute; right: 8px; top: 1px; font-size: 12px; color: #555; }
+    .on  { color: #2e7d32; font-weight: 600; }
+    .off { color: #999; }
+    .log { margin-top: 24px; font-family: ui-monospace, monospace; font-size: 12px; color: #666; max-height: 220px; overflow-y: auto; border-top: 1px solid #eee; padding-top: 12px; line-height: 1.5; }
+    .rec { margin-top: 20px; padding: 12px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; display: none; }
+    .rec a { color: #1565c0; }
+    .knob { margin-top: 20px; display: flex; flex-direction: column; gap: 4px; }
+    .knob label { font-size: 13px; color: #555; }
+    input[type=range] { width: 100%; }
+    select { padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; min-width: 220px; }
+    .who { margin-top: 20px; display: flex; flex-direction: column; gap: 6px; }
+    .who label { font-size: 13px; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>🔊 Детектор звука</h1>
+
+  <div class="who">
+    <label>Кому отправлять уведомления:</label>
+    <select id="recipient">
+      <option value="1014471053">Артем</option>
+      <option value="360527603">Саша</option>
+    </select>
+  </div>
+
+  <div class="row" style="margin-top:20px">
+    <button id="start">🎤 Включить микрофон</button>
+    <button id="stop" disabled>⏹ Выключить</button>
+  </div>
+  <div id="status" class="off">Не активно</div>
+  <div id="level"><div></div><span id="rmsView">0.000</span></div>
+
+  <div class="knob">
+    <label>Порог срабатывания: <b id="thVal">0.15</b></label>
+    <input type="range" id="thr" min="0.02" max="0.5" step="0.01" value="0.15">
+    <label>Пауза между уведомлениями: <b id="cdVal">5000</b> мс</label>
+    <input type="range" id="cd" min="1000" max="15000" step="500" value="5000">
+  </div>
+
+  <div class="rec" id="recBox">
+    <b>🎙 Последняя запись (3 сек):</b><br>
+    <a id="recLink" download>Скачать .webm</a>
+    <audio id="recAudio" controls style="display:block;margin-top:8px;width:100%"></audio>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script>
+    // ====== НАСТРОЙКИ ======
+    const WORKER_URL = "https://withered-credit-4d48.andreifolk5.workers.dev/";
+    const RECORD_MS  = 3000;
+    // =======================
+
+    const recipientSelect = document.getElementById("recipient");
+
+    let THRESHOLD   = 0.15;
+    let COOLDOWN_MS = 5000;
+
+    const startBtn = document.getElementById("start");
+    const stopBtn  = document.getElementById("stop");
+    const statusEl = document.getElementById("status");
+    const levelEl  = document.querySelector("#level > div");
+    const rmsView  = document.getElementById("rmsView");
+    const logEl    = document.getElementById("log");
+    const recBox   = document.getElementById("recBox");
+    const recLink  = document.getElementById("recLink");
+    const recAudio = document.getElementById("recAudio");
+
+    const thrInput = document.getElementById("thr");
+    const cdInput  = document.getElementById("cd");
+    const thVal    = document.getElementById("thVal");
+    const cdVal    = document.getElementById("cdVal");
+
+    thrInput.addEventListener("input", () => {
+      THRESHOLD = parseFloat(thrInput.value);
+      thVal.textContent = THRESHOLD.toFixed(2);
+    });
+    cdInput.addEventListener("input", () => {
+      COOLDOWN_MS = parseInt(cdInput.value, 10);
+      cdVal.textContent = COOLDOWN_MS;
+    });
+
+    recipientSelect.addEventListener("change", () => {
+      const name = recipientSelect.options[recipientSelect.selectedIndex].text;
+      log(`👤 Получатель: ${name} (${recipientSelect.value})`, "#1565c0");
+    });
+
+    let audioCtx, analyser, dataArray, stream;
+    let active = false, lastSentAt = 0, recording = false;
+
+    function log(msg, color) {
+      const t = new Date().toLocaleTimeString("ru-RU");
+      const c = color ? ` style="color:${color}"` : "";
+      logEl.innerHTML = `[${t}] <span${c}>${msg}</span><br>` + logEl.innerHTML;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      if (active) return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        dataArray = new Uint8Array(analyser.fftSize);
+        src.connect(analyser);
+
+        active = true;
+        startBtn.disabled = true;
+        stopBtn.disabled  = false;
+        statusEl.textContent = "🎧 Слушаю...";
+        statusEl.className = "on";
+
+        const name = recipientSelect.options[recipientSelect.selectedIndex].text;
+        log(`Микрофон активен. Порог=${THRESHOLD}. Получатель: ${name}`, "#2e7d32");
+        loop();
+      } catch (e) {
+        alert("Нет доступа к микрофону: " + e.message);
+        log("Ошибка микрофона: " + e.message, "#c62828");
+      }
+    });
+
+    stopBtn.addEventListener("click", () => {
+      active = false;
+      startBtn.disabled = false;
+      stopBtn.disabled  = true;
+      statusEl.textContent = "Микрофон выключен";
+      statusEl.className = "off";
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (audioCtx) audioCtx.close();
+      log("Микрофон выключен", "#888");
+    });
+
+    function loop() {
+      if (!active) return;
+      analyser.getByteTimeDomainData(dataArray);
+
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / dataArray.length);
+      levelEl.style.width = Math.min(100, rms * 400) + "%";
+      rmsView.textContent = rms.toFixed(3);
+
+      const now = Date.now();
+      if (rms > THRESHOLD && now - lastSentAt > COOLDOWN_MS && !recording) {
+        lastSentAt = now;
+        log(`🔔 Звук! rms=${rms.toFixed(3)}`, "#1565c0");
+        recordAndSend();
+      }
+      requestAnimationFrame(loop);
+    }
+
+    // ==== Запись 3 секунд и отправка в Telegram через Worker ====
+    async function recordAndSend() {
+      if (recording) return;
+      recording = true;
+      statusEl.textContent = "🎙 Записываю 3 сек...";
+
+      try {
+        const rec = new MediaRecorder(stream, { mimeType: pickMime() });
+        const chunks = [];
+        rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+        rec.onstop = async () => {
+          const blob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
+
+          // локальное превью
+          const url = URL.createObjectURL(blob);
+          recLink.href = url;
+          recLink.download = "sound_" + Date.now() + ".webm";
+          recAudio.src = url;
+          recBox.style.display = "block";
+          log(`💾 Записано ${(blob.size / 1024).toFixed(1)} КБ`, "#2e7d32");
+
+          // получатель
+          const chatId = recipientSelect.value;
+          const name   = recipientSelect.options[recipientSelect.selectedIndex].text;
+
+          statusEl.textContent = `📤 Отправляю ${name}...`;
+          try {
+            const fd = new FormData();
+            fd.append("voice", blob, "sound.webm");
+            fd.append("chat_id", chatId);
+
+            const r = await fetch(WORKER_URL, { method: "POST", body: fd });
+            const data = await r.json();
+            if (data.ok) {
+              statusEl.textContent = `✅ Отправлено: ${name}`;
+              statusEl.className = "on";
+              log(`✅ Отправлено ${name} (${chatId})`, "#2e7d32");
+            } else {
+              statusEl.textContent = "⚠️ " + (data.description || data.error || "ошибка");
+              log("⚠️ Telegram: " + JSON.stringify(data), "#c62828");
+            }
+          } catch (e) {
+            statusEl.textContent = "❌ Ошибка сети";
+            log("❌ Worker fail: " + e.message, "#c62828");
+          }
+
+          recording = false;
+          if (active) {
+            setTimeout(() => {
+              if (active) { statusEl.textContent = "🎧 Слушаю..."; statusEl.className = "on"; }
+            }, 1500);
+          }
+        };
+
+        rec.start();
+        setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, RECORD_MS);
+      } catch (e) {
+        recording = false;
+        log("❌ Ошибка записи: " + e.message, "#c62828");
+      }
+    }
+
+    function pickMime() {
+      const list = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+      for (const m of list) if (MediaRecorder.isTypeSupported(m)) return m;
+      return "";
+    }
+  </script>
+</body>
+</html>
