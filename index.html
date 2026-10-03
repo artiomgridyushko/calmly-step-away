@@ -21,16 +21,18 @@
     .log { margin-top: 24px; font-family: ui-monospace, monospace; font-size: 12px; color: #666; max-height: 220px; overflow-y: auto; border-top: 1px solid #eee; padding-top: 12px; line-height: 1.5; }
     .rec { margin-top: 20px; padding: 12px; background: #fafafa; border: 1px solid #eee; border-radius: 8px; display: none; }
     .rec a { color: #1565c0; }
+    .rec img { max-width: 100%; border-radius: 6px; margin-top: 8px; }
     .knob { margin-top: 20px; display: flex; flex-direction: column; gap: 4px; }
     .knob label { font-size: 13px; color: #555; }
     input[type=range] { width: 100%; }
     select { padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; min-width: 220px; }
     .who { margin-top: 20px; display: flex; flex-direction: column; gap: 6px; }
     .who label { font-size: 13px; color: #555; }
+    #videoPreview { width: 200px; margin-top: 16px; border-radius: 8px; display: none; transform: scaleX(-1); }
   </style>
 </head>
 <body>
-  <h1>🔊 Детектор звука</h1>
+  <h1>🔊 Детектор звука + 📷 фото</h1>
 
   <div class="who">
     <label>Кому отправлять уведомления:</label>
@@ -41,11 +43,12 @@
   </div>
 
   <div class="row" style="margin-top:20px">
-    <button id="start">🎤 Включить микрофон</button>
+    <button id="start">🎤 Включить микрофон + камеру</button>
     <button id="stop" disabled>⏹ Выключить</button>
   </div>
   <div id="status" class="off">Не активно</div>
   <div id="level"><div></div><span id="rmsView">0.000</span></div>
+  <video id="videoPreview" autoplay muted playsinline></video>
 
   <div class="knob">
     <label>Порог срабатывания: <b id="thVal">0.15</b></label>
@@ -55,9 +58,13 @@
   </div>
 
   <div class="rec" id="recBox">
-    <b>🎙 Последняя запись (3 сек):</b><br>
+    <b>🎙 Последняя запись:</b><br>
     <a id="recLink" download>Скачать .webm</a>
     <audio id="recAudio" controls style="display:block;margin-top:8px;width:100%"></audio>
+    <div id="photoBox" style="display:none">
+      <b>📷 Последний снимок:</b>
+      <img id="photoImg" alt="snapshot">
+    </div>
   </div>
 
   <div class="log" id="log"></div>
@@ -82,6 +89,9 @@
     const recBox   = document.getElementById("recBox");
     const recLink  = document.getElementById("recLink");
     const recAudio = document.getElementById("recAudio");
+    const photoBox = document.getElementById("photoBox");
+    const photoImg = document.getElementById("photoImg");
+    const videoEl  = document.getElementById("videoPreview");
 
     const thrInput = document.getElementById("thr");
     const cdInput  = document.getElementById("cd");
@@ -102,7 +112,8 @@
       log(`👤 Получатель: ${name} (${recipientSelect.value})`, "#1565c0");
     });
 
-    let audioCtx, analyser, dataArray, stream;
+    let audioCtx, analyser, dataArray;
+    let micStream, camStream;
     let active = false, lastSentAt = 0, recording = false;
 
     function log(msg, color) {
@@ -114,11 +125,21 @@
     startBtn.addEventListener("click", async () => {
       if (active) return;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        // Микрофон
+        micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
         });
+
+        // Камера (фронтальная)
+        camStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+        videoEl.srcObject = camStream;
+        videoEl.style.display = "block";
+
+        // Аудио-анализ
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const src = audioCtx.createMediaStreamSource(stream);
+        const src = audioCtx.createMediaStreamSource(micStream);
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 2048;
         dataArray = new Uint8Array(analyser.fftSize);
@@ -127,15 +148,15 @@
         active = true;
         startBtn.disabled = true;
         stopBtn.disabled  = false;
-        statusEl.textContent = "🎧 Слушаю...";
+        statusEl.textContent = "🎧 Слушаю... (микрофон + камера активны)";
         statusEl.className = "on";
 
         const name = recipientSelect.options[recipientSelect.selectedIndex].text;
-        log(`Микрофон активен. Порог=${THRESHOLD}. Получатель: ${name}`, "#2e7d32");
+        log(`Активно. Порог=${THRESHOLD}. Получатель: ${name}`, "#2e7d32");
         loop();
       } catch (e) {
-        alert("Нет доступа к микрофону: " + e.message);
-        log("Ошибка микрофона: " + e.message, "#c62828");
+        alert("Нет доступа к микрофону или камере: " + e.message);
+        log("Ошибка доступа: " + e.message, "#c62828");
       }
     });
 
@@ -143,11 +164,14 @@
       active = false;
       startBtn.disabled = false;
       stopBtn.disabled  = true;
-      statusEl.textContent = "Микрофон выключен";
+      statusEl.textContent = "Выключено";
       statusEl.className = "off";
-      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (micStream) micStream.getTracks().forEach(t => t.stop());
+      if (camStream) camStream.getTracks().forEach(t => t.stop());
       if (audioCtx) audioCtx.close();
-      log("Микрофон выключен", "#888");
+      videoEl.srcObject = null;
+      videoEl.style.display = "none";
+      log("Микрофон и камера выключены", "#888");
     });
 
     function loop() {
@@ -167,75 +191,126 @@
       if (rms > THRESHOLD && now - lastSentAt > COOLDOWN_MS && !recording) {
         lastSentAt = now;
         log(`🔔 Звук! rms=${rms.toFixed(3)}`, "#1565c0");
-        recordAndSend();
+        captureAndSend();
       }
       requestAnimationFrame(loop);
     }
 
-    // ==== Запись 3 секунд и отправка в Telegram через Worker ====
-    async function recordAndSend() {
+    // ==== Запись звука + снимок с камеры ====
+    async function captureAndSend() {
       if (recording) return;
       recording = true;
-      statusEl.textContent = "🎙 Записываю 3 сек...";
+      statusEl.textContent = "🎙 Записываю + 📷 снимаю...";
 
+      // Сразу делаем снимок с камеры (пока идёт запись звука)
+      const photoBlob = await capturePhoto();
+
+      // Записываем 3 секунды звука
+      let voiceBlob = null;
       try {
-        const rec = new MediaRecorder(stream, { mimeType: pickMime() });
-        const chunks = [];
-        rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-
-        rec.onstop = async () => {
-          const blob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
-
-          // локальное превью
-          const url = URL.createObjectURL(blob);
-          recLink.href = url;
-          recLink.download = "sound_" + Date.now() + ".webm";
-          recAudio.src = url;
-          recBox.style.display = "block";
-          log(`💾 Записано ${(blob.size / 1024).toFixed(1)} КБ`, "#2e7d32");
-
-          // получатель
-          const chatId = recipientSelect.value;
-          const name   = recipientSelect.options[recipientSelect.selectedIndex].text;
-
-          statusEl.textContent = `📤 Отправляю ${name}...`;
-          try {
-            const fd = new FormData();
-            fd.append("voice", blob, "sound.webm");
-            fd.append("chat_id", chatId);
-
-            const r = await fetch(WORKER_URL, { method: "POST", body: fd });
-            const data = await r.json();
-            if (data.ok) {
-              statusEl.textContent = `✅ Отправлено: ${name}`;
-              statusEl.className = "on";
-              log(`✅ Отправлено ${name} (${chatId})`, "#2e7d32");
-            } else {
-              statusEl.textContent = "⚠️ " + (data.description || data.error || "ошибка");
-              log("⚠️ Telegram: " + JSON.stringify(data), "#c62828");
-            }
-          } catch (e) {
-            statusEl.textContent = "❌ Ошибка сети";
-            log("❌ Worker fail: " + e.message, "#c62828");
-          }
-
-          recording = false;
-          if (active) {
-            setTimeout(() => {
-              if (active) { statusEl.textContent = "🎧 Слушаю..."; statusEl.className = "on"; }
-            }, 1500);
-          }
-        };
-
-        rec.start();
-        setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, RECORD_MS);
+        voiceBlob = await recordAudio(RECORD_MS);
       } catch (e) {
-        recording = false;
-        log("❌ Ошибка записи: " + e.message, "#c62828");
+        log("❌ Ошибка записи звука: " + e.message, "#c62828");
+      }
+
+      // Локальный превью
+      if (voiceBlob) {
+        const url = URL.createObjectURL(voiceBlob);
+        recLink.href = url;
+        recLink.download = "sound_" + Date.now() + ".webm";
+        recAudio.src = url;
+      }
+      if (photoBlob) {
+        photoImg.src = URL.createObjectURL(photoBlob);
+        photoBox.style.display = "block";
+      }
+      recBox.style.display = "block";
+
+      // Отправка в Telegram
+      const chatId = recipientSelect.value;
+      const name   = recipientSelect.options[recipientSelect.selectedIndex].text;
+
+      statusEl.textContent = `📤 Отправляю ${name}...`;
+      try {
+        const fd = new FormData();
+        fd.append("chat_id", chatId);
+        if (voiceBlob) fd.append("voice", voiceBlob, "sound.webm");
+        if (photoBlob) fd.append("photo", photoBlob, "snapshot.jpg");
+
+        const r = await fetch(WORKER_URL, { method: "POST", body: fd });
+        const data = await r.json();
+        const voiceOk = data?.results?.voice?.ok;
+        const photoOk = data?.results?.photo?.ok;
+
+        if (voiceOk && photoOk) {
+          statusEl.textContent = `✅ Отправлено: ${name} (звук + фото)`;
+          statusEl.className = "on";
+          log(`✅ OK: звук + фото → ${name}`, "#2e7d32");
+        } else {
+          statusEl.textContent = "⚠️ Частичная ошибка — смотри лог";
+          log("⚠️ voice=" + JSON.stringify(data?.results?.voice) +
+              " photo=" + JSON.stringify(data?.results?.photo), "#c62828");
+        }
+      } catch (e) {
+        statusEl.textContent = "❌ Ошибка сети";
+        log("❌ Worker fail: " + e.message, "#c62828");
+      }
+
+      recording = false;
+      if (active) {
+        setTimeout(() => {
+          if (active) { statusEl.textContent = "🎧 Слушаю..."; statusEl.className = "on"; }
+        }, 1500);
       }
     }
 
-    function pickMime() {
+    // Запись звука N мс
+    function recordAudio(ms) {
+      return new Promise((resolve, reject) => {
+        try {
+          const rec = new MediaRecorder(micStream, { mimeType: pickAudioMime() });
+          const chunks = [];
+          rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+          rec.onstop = () => {
+            resolve(new Blob(chunks, { type: chunks[0]?.type || "audio/webm" }));
+          };
+          rec.onerror = e => reject(e.error || new Error("recorder error"));
+          rec.start();
+          setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, ms);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
+
+    // Снимок с видео-элемента
+    async function capturePhoto() {
+      try {
+        // Ждём, пока видео реально начнёт играть
+        if (videoEl.readyState < 2) {
+          await new Promise(res => {
+            const onReady = () => { videoEl.removeEventListener("loadeddata", onReady); res(); };
+            videoEl.addEventListener("loadeddata", onReady);
+            setTimeout(res, 1500);
+          });
+        }
+        const w = videoEl.videoWidth  || 640;
+        const h = videoEl.videoHeight || 480;
+        const canvas = document.createElement("canvas");
+        canvas.width  = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(videoEl, 0, 0, w, h);
+        const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.85));
+        log(`📷 Снимок ${w}×${h}, ${(blob.size / 1024).toFixed(1)} КБ`, "#1565c0");
+        return blob;
+      } catch (e) {
+        log("❌ Фото не удалось: " + e.message, "#c62828");
+        return null;
+      }
+    }
+
+    function pickAudioMime() {
       const list = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
       for (const m of list) if (MediaRecorder.isTypeSupported(m)) return m;
       return "";
