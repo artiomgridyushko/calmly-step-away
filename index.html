@@ -28,7 +28,7 @@
     select { padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; min-width: 220px; }
     .who { margin-top: 20px; display: flex; flex-direction: column; gap: 6px; }
     .who label { font-size: 13px; color: #555; }
-    #videoPreview { width: 200px; margin-top: 16px; border-radius: 8px; display: none; transform: scaleX(-1); }
+    #videoPreview { width: 200px; margin-top: 16px; border-radius: 8px; display: none; }
   </style>
 </head>
 <body>
@@ -125,19 +125,17 @@
     startBtn.addEventListener("click", async () => {
       if (active) return;
       try {
-        // Микрофон
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
         });
 
-        // Камера (фронтальная)
+        // ЗАДНЯЯ камера
         camStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } }
         });
         videoEl.srcObject = camStream;
         videoEl.style.display = "block";
 
-        // Аудио-анализ
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const src = audioCtx.createMediaStreamSource(micStream);
         analyser = audioCtx.createAnalyser();
@@ -148,11 +146,11 @@
         active = true;
         startBtn.disabled = true;
         stopBtn.disabled  = false;
-        statusEl.textContent = "🎧 Слушаю... (микрофон + камера активны)";
+        statusEl.textContent = "🎧 Слушаю... (микрофон + камера)";
         statusEl.className = "on";
 
         const name = recipientSelect.options[recipientSelect.selectedIndex].text;
-        log(`Активно. Порог=${THRESHOLD}. Получатель: ${name}`, "#2e7d32");
+        log(`Активно. Порог=${THRESHOLD}. Получатель: ${name}. Камера: задняя`, "#2e7d32");
         loop();
       } catch (e) {
         alert("Нет доступа к микрофону или камере: " + e.message);
@@ -196,16 +194,13 @@
       requestAnimationFrame(loop);
     }
 
-    // ==== Запись звука + снимок с камеры ====
     async function captureAndSend() {
       if (recording) return;
       recording = true;
       statusEl.textContent = "🎙 Записываю + 📷 снимаю...";
 
-      // Сразу делаем снимок с камеры (пока идёт запись звука)
       const photoBlob = await capturePhoto();
 
-      // Записываем 3 секунды звука
       let voiceBlob = null;
       try {
         voiceBlob = await recordAudio(RECORD_MS);
@@ -213,7 +208,6 @@
         log("❌ Ошибка записи звука: " + e.message, "#c62828");
       }
 
-      // Локальный превью
       if (voiceBlob) {
         const url = URL.createObjectURL(voiceBlob);
         recLink.href = url;
@@ -226,7 +220,6 @@
       }
       recBox.style.display = "block";
 
-      // Отправка в Telegram
       const chatId = recipientSelect.value;
       const name   = recipientSelect.options[recipientSelect.selectedIndex].text;
 
@@ -264,7 +257,6 @@
       }
     }
 
-    // Запись звука N мс
     function recordAudio(ms) {
       return new Promise((resolve, reject) => {
         try {
@@ -283,10 +275,8 @@
       });
     }
 
-    // Снимок с видео-элемента
     async function capturePhoto() {
       try {
-        // Ждём, пока видео реально начнёт играть
         if (videoEl.readyState < 2) {
           await new Promise(res => {
             const onReady = () => { videoEl.removeEventListener("loadeddata", onReady); res(); };
